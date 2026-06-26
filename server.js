@@ -2,6 +2,16 @@ require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const cloudinary = require('cloudinary').v2;
+const fileUpload = require('express-fileupload');
+const fs = require('fs');
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -56,6 +66,14 @@ const contactSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    profilePic: {
+      type: String,
+      default: '',
+    },
+    profilePicPublicId: {
+      type: String,
+      default: '',
+    },
   },
   {
     timestamps: true,
@@ -68,6 +86,27 @@ const Contact = mongoose.model('Contact', contactSchema);
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Express file upload middleware configuration
+app.use(
+  fileUpload({
+    useTempFiles: true,
+    tempFileDir: './tmp/',
+    limits: { fileSize: 5 * 1024 * 1024 }, // limit to 5MB
+  })
+);
+
+// Helper to clean up temp files
+const cleanTempFile = (filePath) => {
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch (err) {
+      console.error(`Error deleting temp file ${filePath}:`, err.message);
+    }
+  }
+};
+
 
 // Simple logger middleware
 app.use((req, res, next) => {
@@ -88,9 +127,12 @@ app.get('/', (req, res) => {
 // 1. Create a Contact
 app.post('/api/contacts', async (req, res) => {
   try {
-    const { name, email, phone, gender, address } = req.body;
+    const { name, email, phone, gender, address } = req.body || {};
 
     if (!name || !email || !phone) {
+      if (req.files && req.files.profilePic) {
+        cleanTempFile(req.files.profilePic.tempFilePath);
+      }
       return res.status(400).json({
         success: false,
         message: 'Please provide name, email, and phone fields',
@@ -100,10 +142,43 @@ app.post('/api/contacts', async (req, res) => {
     // Check if email already exists
     const contactExists = await Contact.findOne({ email });
     if (contactExists) {
+      if (req.files && req.files.profilePic) {
+        cleanTempFile(req.files.profilePic.tempFilePath);
+      }
       return res.status(400).json({
         success: false,
         message: 'A contact with this email already exists',
       });
+    }
+
+    let profilePic = '';
+    let profilePicPublicId = '';
+
+    if (req.files && req.files.profilePic) {
+      const file = req.files.profilePic;
+      if (!file.mimetype.startsWith('image/')) {
+        cleanTempFile(file.tempFilePath);
+        return res.status(400).json({
+          success: false,
+          message: 'Please upload an image file',
+        });
+      }
+
+      try {
+        const result = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: 'contact_profiles',
+        });
+        profilePic = result.secure_url;
+        profilePicPublicId = result.public_id;
+      } catch (uploadError) {
+        cleanTempFile(file.tempFilePath);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload profile picture to cloud storage: ' + uploadError.message,
+        });
+      } finally {
+        cleanTempFile(file.tempFilePath);
+      }
     }
 
     const contact = await Contact.create({
@@ -112,6 +187,8 @@ app.post('/api/contacts', async (req, res) => {
       phone,
       gender,
       address,
+      profilePic,
+      profilePicPublicId,
     });
 
     res.status(201).json({
@@ -119,6 +196,9 @@ app.post('/api/contacts', async (req, res) => {
       data: contact,
     });
   } catch (error) {
+    if (req.files && req.files.profilePic) {
+      cleanTempFile(req.files.profilePic.tempFilePath);
+    }
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map((val) => val.message);
       return res.status(400).json({ success: false, message: messages.join(', ') });
@@ -188,9 +268,12 @@ app.get('/api/contacts/:id', async (req, res) => {
 app.put('/api/contacts/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, phone, gender, address } = req.body;
+    const { name, email, phone, gender, address } = req.body || {};
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
+      if (req.files && req.files.profilePic) {
+        cleanTempFile(req.files.profilePic.tempFilePath);
+      }
       return res.status(400).json({
         success: false,
         message: 'Invalid contact ID format',
@@ -199,6 +282,9 @@ app.put('/api/contacts/:id', async (req, res) => {
 
     let contact = await Contact.findById(id);
     if (!contact) {
+      if (req.files && req.files.profilePic) {
+        cleanTempFile(req.files.profilePic.tempFilePath);
+      }
       return res.status(404).json({
         success: false,
         message: 'Contact not found',
@@ -209,6 +295,9 @@ app.put('/api/contacts/:id', async (req, res) => {
     if (email && email.toLowerCase() !== contact.email.toLowerCase()) {
       const emailTaken = await Contact.findOne({ email: email.toLowerCase() });
       if (emailTaken) {
+        if (req.files && req.files.profilePic) {
+          cleanTempFile(req.files.profilePic.tempFilePath);
+        }
         return res.status(400).json({
           success: false,
           message: 'A contact with this email already exists',
@@ -216,9 +305,48 @@ app.put('/api/contacts/:id', async (req, res) => {
       }
     }
 
+    const updateData = { name, email, phone, gender, address };
+
+    if (req.files && req.files.profilePic) {
+      const file = req.files.profilePic;
+      if (!file.mimetype.startsWith('image/')) {
+        cleanTempFile(file.tempFilePath);
+        return res.status(400).json({
+          success: false,
+          message: 'Please upload an image file',
+        });
+      }
+
+      try {
+        const result = await cloudinary.uploader.upload(file.tempFilePath, {
+          folder: 'contact_profiles',
+        });
+
+        // Delete old profile picture from Cloudinary
+        if (contact.profilePicPublicId) {
+          try {
+            await cloudinary.uploader.destroy(contact.profilePicPublicId);
+          } catch (destroyError) {
+            console.error('Failed to delete old image from Cloudinary:', destroyError.message);
+          }
+        }
+
+        updateData.profilePic = result.secure_url;
+        updateData.profilePicPublicId = result.public_id;
+      } catch (uploadError) {
+        cleanTempFile(file.tempFilePath);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload profile picture to cloud storage: ' + uploadError.message,
+        });
+      } finally {
+        cleanTempFile(file.tempFilePath);
+      }
+    }
+
     contact = await Contact.findByIdAndUpdate(
       id,
-      { name, email, phone, gender, address },
+      updateData,
       { new: true, runValidators: true }
     );
 
@@ -227,6 +355,9 @@ app.put('/api/contacts/:id', async (req, res) => {
       data: contact,
     });
   } catch (error) {
+    if (req.files && req.files.profilePic) {
+      cleanTempFile(req.files.profilePic.tempFilePath);
+    }
     if (error.name === 'ValidationError') {
       const messages = Object.values(error.errors).map((val) => val.message);
       return res.status(400).json({ success: false, message: messages.join(', ') });
@@ -253,6 +384,15 @@ app.delete('/api/contacts/:id', async (req, res) => {
         success: false,
         message: 'Contact not found',
       });
+    }
+
+    // Delete image from Cloudinary if it exists
+    if (contact.profilePicPublicId) {
+      try {
+        await cloudinary.uploader.destroy(contact.profilePicPublicId);
+      } catch (destroyError) {
+        console.error('Failed to delete image from Cloudinary on contact delete:', destroyError.message);
+      }
     }
 
     await Contact.findByIdAndDelete(id);
