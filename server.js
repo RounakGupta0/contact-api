@@ -15,6 +15,7 @@ cloudinary.config({
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const DEFAULT_PROFILE_PIC = 'https://res.cloudinary.com/demo/image/upload/d_avatar.png/avatar.png';
 
 // Connect to MongoDB
 const connectDB = async () => {
@@ -68,7 +69,7 @@ const contactSchema = new mongoose.Schema(
     },
     profilePic: {
       type: String,
-      default: '',
+      default: DEFAULT_PROFILE_PIC,
     },
     profilePicPublicId: {
       type: String,
@@ -79,6 +80,24 @@ const contactSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+contactSchema.set('toJSON', {
+  transform: (doc, ret) => {
+    if (!ret.profilePic) {
+      ret.profilePic = DEFAULT_PROFILE_PIC;
+    }
+    return ret;
+  }
+});
+
+contactSchema.set('toObject', {
+  transform: (doc, ret) => {
+    if (!ret.profilePic) {
+      ret.profilePic = DEFAULT_PROFILE_PIC;
+    }
+    return ret;
+  }
+});
 
 const Contact = mongoose.model('Contact', contactSchema);
 
@@ -151,7 +170,7 @@ app.post('/api/contacts', async (req, res) => {
       });
     }
 
-    let profilePic = '';
+    let profilePic = DEFAULT_PROFILE_PIC;
     let profilePicPublicId = '';
 
     if (req.files && req.files.profilePic) {
